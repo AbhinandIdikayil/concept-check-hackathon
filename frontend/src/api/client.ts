@@ -2,11 +2,11 @@ import axios from 'axios'
 
 /**
  * Base URL of the FastAPI backend.
- * Vite only exposes env vars prefixed with VITE_, so `.env` holds
- * `VITE_API=http://localhost:8000`.
+ * `.env` holds `VITE_API=http://localhost:8000` (or `API=…`); both are
+ * inlined at build time by the `define` block in vite.config.ts.
  */
 export const API_BASE_URL = (
-  import.meta.env.VITE_API ?? 'http://localhost:8000'
+  process.env.API ?? 'http://localhost:8000'
 ).replace(/\/+$/, '')
 
 export const api = axios.create({
