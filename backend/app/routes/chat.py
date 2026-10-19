@@ -1,10 +1,10 @@
 """Chat endpoints."""
 
-from uuid import UUID
+from uuid import UUID  # noqa: I001
 
 from fastapi import APIRouter, status
 
-from ..models import (
+from ..validators import (
     ChatCreateRequest,
     ChatCreateResponse,
     MessageCreateRequest,

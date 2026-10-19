@@ -1,8 +1,8 @@
 """GET /api/case/all"""
 
-from fastapi import APIRouter
+from fastapi import APIRouter  # noqa: I001
 
-from ..models import CaseOut
+from ..validators import CaseOut
 from ..services import chat_service
 
 router = APIRouter(prefix="/api/case", tags=["case"])

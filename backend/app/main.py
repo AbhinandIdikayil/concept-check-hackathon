@@ -1,22 +1,29 @@
-"""Concept Check API."""
-
 import logging
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .config import settings
+from .config import get_settings
 from .routes import case, chat, health
 from .services.errors import ServiceError
 
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Concept Check API", version="1.0.0")
+settings = get_settings()
+
+origins = (
+    ["*"]
+    if settings.cors_origins.strip() == "*"
+    else [
+        origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()
+    ]
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
+    allow_origins=origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

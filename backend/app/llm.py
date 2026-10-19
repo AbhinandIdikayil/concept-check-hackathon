@@ -1,8 +1,15 @@
-"""Groq calls: grading an answer (`find_gap`) and writing a follow-up case
-(`write_followup`).
+"""Groq call: find where the learner stopped reasoning and ask one follow-up.
 
-Both functions ask the model for JSON and tolerate a fenced code block around
-it. A single retry is attempted when the model returns something unparseable.
+The model has exactly one job and returns exactly two things:
+
+    {"gap_sentence": "<verbatim sentence from the learner>", "follow_up": "<question>"}
+
+It is never asked for a verdict, a status, a score, or an opinion on whether the
+learner understood. Pass/fail is decided in `services.chat_service` by comparing
+the learner's answer to the case's reference points.
+
+The model is given the question and the learner's answer only. It never sees the
+reference answer, so it cannot leak it into the follow-up.
 """
 
 from __future__ import annotations
@@ -14,46 +21,31 @@ from typing import Any
 
 from groq import Groq
 
-from .config import settings
+from .config import get_settings
 
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
-GRADER_SYSTEM = """You grade a candidate's answer to a technical concept-check question.
+GAP_SYSTEM = """You are looking at one answer a candidate gave to a technical question.
 
-You are given the question, a reference answer, and the candidate's answer.
-Compare the candidate's answer against the reference answer on substance, not wording.
+Do exactly two things.
 
-- verdict "success": the candidate covers the reference points. Paraphrasing is fine.
-- verdict "recite": the answer is wrong, shallow, incomplete, or just recites buzzwords
-  without covering one or more reference points.
+1. "gap_sentence": find the exact sentence where the candidate stopped reasoning. That is
+   the sentence where they assert something without saying what actually breaks, why, or what
+   follows from it. Copy it word for word from the candidate's answer. Do not rewrite it, do
+   not summarise it, do not fix its grammar, do not join sentences together.
 
-The "feedback" field is shown directly to the candidate, so write it as direct
-second-person prose. On success, congratulate them and name what they got right.
-On "recite", say precisely which reference point is missing. 2-4 sentences, no markdown.
-
-Reply with ONLY a JSON object:
-{"verdict": "success" | "recite", "feedback": "<prose>", "missing_points": ["<short label>"]}
-"missing_points" is an empty list when the verdict is "success"."""
-
-WRITER_SYSTEM = """You write follow-up questions for a technical concept-check interview.
-
-The candidate's answer to a question was shallow, so you probe the specific gap.
-Write exactly ONE new question that:
-- targets the missing points,
-- stays in the same problem domain (backend, auth, sessions, caching, secrets),
-- is self-contained, with no reference to a previous question or answer,
-- is slightly harder than what they failed, written as a scenario, not a definition.
-
-Also write the reference answer for it: the specific points a strong candidate must cover.
+2. "follow_up": write ONE question that asks what actually breaks at that gap. Make it a
+   scenario, not a definition. Do not answer it. Do not give hints. Do not tell the candidate
+   they were wrong or what they missed. Never reveal a correct answer or any part of one.
 
 Reply with ONLY a JSON object:
-{"question": "<the question>", "expected": "<the reference answer>"}"""
+{"gap_sentence": "<verbatim sentence copied from the candidate's answer>", "follow_up": "<one question>"}"""
 
 
 def _client() -> Groq:
-    return Groq(api_key=settings.groq_api_key)
+    return Groq(api_key=get_settings().groq_api_key)
 
 
 def _parse_json(raw: str) -> dict[str, Any]:
@@ -79,7 +71,7 @@ def _complete(system: str, user: str) -> dict[str, Any]:
     for attempt in range(2):
         try:
             response = client.chat.completions.create(
-                model=settings.groq_model,
+                model=get_settings().groq_model,
                 messages=messages,
                 temperature=0.2,
                 response_format={"type": "json_object"},
@@ -92,80 +84,26 @@ def _complete(system: str, user: str) -> dict[str, Any]:
     raise RuntimeError(f"groq call failed: {last_error}") from last_error
 
 
-def find_gap(
-    question: str,
-    expected_answer: str | None,
-    user_answer: str,
-    history: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    """Grade the user's answer.
+def find_gap_and_followup(question: str, answer: str) -> dict[str, str]:
+    """Return the sentence where reasoning stopped, and one follow-up question.
 
-    Returns {"verdict": "success" | "recite", "feedback": str, "missing_points": list[str]}.
+    Returns {"gap_sentence": str, "follow_up": str}. Raises ValueError when the
+    model will not produce a follow-up question.
     """
-    transcript = ""
-    if history:
-        lines = [f"{m.get('role')}: {m.get('message')}" for m in history]
-        transcript = "\n\nConversation so far:\n" + "\n".join(lines)
+    user = f"Question:\n{question}\n\nCandidate's answer:\n{answer}"
+    result = _complete(GAP_SYSTEM, user)
 
-    user = (
-        f"Question:\n{question}\n\n"
-        f"Reference answer:\n{expected_answer or '(none provided)'}\n\n"
-        f"Candidate's answer:\n{user_answer}"
-        f"{transcript}"
-    )
+    gap = str(result.get("gap_sentence") or "").strip()
+    follow_up = str(result.get("follow_up") or "").strip()
 
-    result = _complete(GRADER_SYSTEM, user)
+    # The gap sentence is only useful if it is the learner's own words. If the
+    # model paraphrased or invented it, fall back to the learner's answer rather
+    # than putting words in their mouth.
+    if not gap or gap.strip("\"'") not in answer:
+        logger.warning("gap_sentence was not a verbatim quote, falling back to the answer")
+        gap = answer.strip()
 
-    verdict = str(result.get("verdict", "")).strip().lower()
-    if verdict not in {"success", "recite"}:
-        # Never fail the request over a formatting slip: treat it as a gap.
-        logger.warning("unexpected verdict %r, defaulting to recite", result.get("verdict"))
-        verdict = "recite"
+    if not follow_up:
+        raise ValueError("model returned an empty follow_up")
 
-    feedback = str(result.get("feedback") or "").strip()
-    if not feedback:
-        feedback = (
-            "Nice, that covers the key points."
-            if verdict == "success"
-            else "You are missing part of the point here, let's dig into it."
-        )
-
-    missing = result.get("missing_points") or []
-    if not isinstance(missing, list):
-        missing = [str(missing)]
-
-    return {
-        "verdict": verdict,
-        "feedback": feedback,
-        "missing_points": [str(point) for point in missing],
-    }
-
-
-def write_followup(
-    question: str,
-    expected_answer: str | None,
-    user_answer: str,
-    feedback: str = "",
-    missing_points: list[str] | None = None,
-) -> dict[str, str]:
-    """Write one new case targeting the gap.
-
-    Returns {"question": str, "expected": str}.
-    """
-    gaps = ", ".join(missing_points or []) or "(see feedback)"
-    user = (
-        f"Original question:\n{question}\n\n"
-        f"Reference answer:\n{expected_answer or '(none provided)'}\n\n"
-        f"Candidate's answer:\n{user_answer}\n\n"
-        f"Grader feedback:\n{feedback}\n\n"
-        f"Missing points:\n{gaps}"
-    )
-
-    result = _complete(WRITER_SYSTEM, user)
-
-    new_question = str(result.get("question") or "").strip()
-    new_expected = str(result.get("expected") or "").strip()
-    if not new_question:
-        raise ValueError("model returned an empty follow-up question")
-
-    return {"question": new_question, "expected": new_expected or "(no reference answer provided)"}
+    return {"gap_sentence": gap, "follow_up": follow_up}
