@@ -2,11 +2,12 @@
 
 from uuid import UUID  # noqa: I001
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from ..validators import (
     ChatCreateRequest,
     ChatCreateResponse,
+    ChatOut,
     MessageCreateRequest,
     MessageCreateResponse,
     MessageOut,
@@ -20,6 +21,16 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 def create_chat(payload: ChatCreateRequest) -> ChatCreateResponse:
     """Select a case and open a chat on it."""
     return chat_service.create_chat(payload.case_id, payload.user_id)
+
+
+@router.get("/all", response_model=list[ChatOut])
+def list_all_chats(
+    user_id: str = Query(
+        min_length=1, description="Owner ULID; only this user's chats are returned."
+    ),
+) -> list[ChatOut]:
+    """Every chat belonging to one user, with the text of its case."""
+    return chat_service.list_chats(user_id)
 
 
 # chat_id is typed as UUID because chats.id is a uuid column: a malformed id

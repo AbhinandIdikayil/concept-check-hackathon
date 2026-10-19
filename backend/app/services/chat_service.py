@@ -12,7 +12,7 @@ from ulid import ULID
 
 from ..db import get_client
 from ..llm import find_gap_and_followup
-from ..validators import CaseOut, ChatCreateResponse, MessageCreateResponse, MessageOut
+from ..validators import CaseOut, ChatCreateResponse, ChatOut, MessageCreateResponse, MessageOut
 from .errors import ConflictError, ForbiddenError, NotFoundError, ServiceError, UpstreamError
 
 logger = logging.getLogger(__name__)
@@ -201,6 +201,37 @@ def get_chat(db: Client, chat_id: str) -> dict[str, Any]:
     if row is None:
         raise NotFoundError(f"chat '{chat_id}' does not exist")
     return row
+
+
+def list_chats(user_id: str) -> list[ChatOut]:
+    """Every chat belonging to `user_id`, oldest first, with its case text.
+
+    Two plain queries rather than an embedded join: the foreign key guarantees
+    every `case_id` resolves, and keeping the lookup explicit makes the row
+    shape obvious.
+    """
+    db = get_client()
+    rows = (
+        db.table("chats")
+        .select("id,case_id")
+        .eq("user_id", user_id)
+        .order("created_at")
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        return []
+
+    case_ids = sorted({row["case_id"] for row in rows})
+    case_rows = db.table("cases").select("id,text").in_("id", case_ids).execute().data or []
+    text_by_id = {case["id"]: case["text"] for case in case_rows}
+
+    return [
+        ChatOut(chat_id=row["id"], text=text_by_id[row["case_id"]])
+        for row in rows
+        if row["case_id"] in text_by_id
+    ]
 
 
 # --------------------------------------------------------------------------- #

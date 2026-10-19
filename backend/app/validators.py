@@ -11,6 +11,13 @@ class CaseOut(BaseModel):
     text: str
 
 
+class ChatOut(BaseModel):
+    """One row of the chat listing."""
+
+    chat_id: str
+    text: str = Field(description="The text of the case this chat was opened on.")
+
+
 class ChatCreateRequest(BaseModel):
     case_id: str = Field(min_length=1)
     user_id: str | None = Field(
