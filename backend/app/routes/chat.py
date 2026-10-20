@@ -29,7 +29,7 @@ def list_all_chats(
         min_length=1, description="Owner ULID; only this user's chats are returned."
     ),
 ) -> list[ChatOut]:
-    """Every chat belonging to one user, with the text of its case."""
+    """Every chat belonging to one user, newest first, with the text of its case."""
     return chat_service.list_chats(user_id)
 
 

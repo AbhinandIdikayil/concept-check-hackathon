@@ -215,7 +215,11 @@ def get_chat(db: Client, chat_id: str) -> dict[str, Any]:
 
 
 def list_chats(user_id: str) -> list[ChatOut]:
-    """Every chat belonging to `user_id`, oldest first, with its case text.
+    """Every chat belonging to `user_id`, newest first, with its case text.
+
+    Sorted by the database, not in Python: the list is a "recent chats" panel,
+    so the newest conversation belongs at the top. `id` breaks ties, because
+    `created_at` alone is not a total order and two chats can share it.
 
     Two plain queries rather than an embedded join: the foreign key guarantees
     every `case_id` resolves, and keeping the lookup explicit makes the row
@@ -226,7 +230,8 @@ def list_chats(user_id: str) -> list[ChatOut]:
         db.table("chats")
         .select("id,case_id")
         .eq("user_id", user_id)
-        .order("created_at")
+        .order("created_at", desc=True)
+        .order("id", desc=True)
         .execute()
         .data
         or []
