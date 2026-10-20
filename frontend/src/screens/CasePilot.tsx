@@ -7,10 +7,10 @@ import {
   History,
   Inbox,
   Loader2,
+  Menu,
   PanelLeftClose,
   Plus,
   RotateCcw,
-  Search,
 } from 'lucide-react'
 import {
   createChat,
@@ -88,6 +88,8 @@ export default function CasePilot() {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
+  // The mobile drawer starts closed; the desktop column is always visible.
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -269,6 +271,21 @@ export default function CasePilot() {
     navigate('/')
   }, [resetChat])
 
+  /** Navigating from the sidebar closes it, on every screen size. */
+  const closeSidebar = useCallback(() => {
+    setSidebarOpen(false)
+  }, [])
+
+  // Close the drawer when the window shrinks to a small screen.
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 48rem)')
+    const handleChange = () => {
+      if (!query.matches) setSidebarOpen(false)
+    }
+    query.addEventListener('change', handleChange)
+    return () => query.removeEventListener('change', handleChange)
+  }, [])
+
   // Keep the view in sync with the URL: deep links (e.g. /chat/<id>) and
   // the browser back/forward buttons.
   useEffect(() => {
@@ -286,7 +303,6 @@ export default function CasePilot() {
     return () => window.removeEventListener('popstate', syncFromRoute)
   }, [openChatById, resetChat])
 
-
   // The case prompt. The backend usually stores it as the first assistant
   // message, so only show it separately when the transcript doesn't have it.
   const questionText = activeCase?.text ?? chatTitle ?? null
@@ -296,90 +312,126 @@ export default function CasePilot() {
       ? questionText
       : null
 
+  /** Sidebar content, shared by the desktop column and the mobile drawer. */
+  const renderSidebar = (showCollapse: boolean) => (
+    <>
+      <div className="flex justify-between items-center">
+        <div className="font-semibold text-sidebar-foreground text-base flex items-center gap-2">
+          <span className="rounded-full bg-primary size-2.5" />
+          <span>CasePilot</span>
+        </div>
+        {showCollapse && (
+          <div className="flex items-center gap-1">
+            <button
+              aria-label="Close sidebar"
+              onClick={closeSidebar}
+              className="rounded-md text-sidebar-foreground/70 flex justify-center items-center size-8 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            >
+              <PanelLeftClose className="size-4" />
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col flex-1 min-h-0">
+        <input
+          placeholder="Search cases"
+          className="rounded-md bg-sidebar-accent text-sidebar-foreground text-sm border-t border-t-sidebar-border border-r border-r-sidebar-border border-b border-b-sidebar-border border-l border-l-sidebar-border outline-none hidden mt-5 pr-3 pl-3 h-9 placeholder:text-sidebar-foreground/50 focus:ring-2 focus:ring-sidebar-ring"
+          defaultValue=""
+        />
+        <button
+          onClick={() => {
+            backToCases()
+            closeSidebar()
+          }}
+          className="font-medium rounded-md bg-sidebar-primary text-sidebar-primary-foreground text-sm flex mt-5 pr-3 pl-3 items-center gap-2 h-10 hover:opacity-90"
+        >
+          <Plus className="size-4" />
+          <span>New case</span>
+        </button>
+
+        <div className="mt-6 flex-1 min-h-0 overflow-y-auto">
+          <p className="font-medium uppercase text-sidebar-foreground/50 text-xs tracking-wide mb-2 pr-2 pl-2">
+            Recent chats
+          </p>
+          <div>
+            {recentChatsLoading ? (
+              Array.from({ length: 4 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="h-8 rounded-md bg-sidebar-accent/60 animate-pulse mb-1"
+                />
+              ))
+            ) : recentChats.length === 0 ? (
+              <p className="text-sidebar-foreground/50 text-xs pr-2 pl-2 py-1">
+                No chats yet.
+              </p>
+            ) : (
+              recentChats.map((chat) => (
+                <button
+                  key={chat.chat_id}
+                  onClick={() => {
+                    void openChat(chat)
+                    closeSidebar()
+                  }}
+                  disabled={busy}
+                  title={chat.text}
+                  className={`text-left rounded-md text-sm border-l-2 flex mb-1 pt-2 pr-2 pb-2 pl-2 items-center w-full truncate transition-colors disabled:opacity-60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
+                    chatId === chat.chat_id
+                      ? 'border-l-primary bg-sidebar-accent text-sidebar-foreground'
+                      : 'border-l-sidebar-border text-sidebar-foreground/80'
+                  }`}
+                >
+                  <span className="truncate">{chat.text}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+
   return (
     <div className="@container bg-background text-foreground w-full h-full">
       <div className="flex w-full h-full overflow-hidden">
-        <aside className="bg-sidebar border-y-sidebar-border border-r border-r-sidebar-border border-l-sidebar-border w-1/4 flex pt-5 pr-4 pb-5 pl-4 flex-col shrink-0 @3xl:flex">
-          <div className="flex justify-between items-center">
-            <div className="font-semibold text-sidebar-foreground text-base flex items-center gap-2">
-              <span className="rounded-full bg-primary size-2.5" />
-              <span>CasePilot</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <button
-                aria-label="Search"
-                className="rounded-md text-sidebar-foreground/70 flex justify-center items-center size-8 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              >
-                <Search className="size-4" />
-              </button>
-              <button
-                aria-label="Collapse sidebar"
-                className="rounded-md text-sidebar-foreground/70 flex justify-center items-center size-8 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              >
-                <PanelLeftClose className="size-4" />
-              </button>
-            </div>
-          </div>
-          <div className="flex flex-col flex-1 min-h-0">
-            <input
-              placeholder="Search cases"
-              className="rounded-md bg-sidebar-accent text-sidebar-foreground text-sm border-t border-t-sidebar-border border-r border-r-sidebar-border border-b border-b-sidebar-border border-l border-l-sidebar-border outline-none hidden mt-5 pr-3 pl-3 h-9 placeholder:text-sidebar-foreground/50 focus:ring-2 focus:ring-sidebar-ring"
-              defaultValue=""
-            />
-            <button
-              onClick={backToCases}
-              className="font-medium rounded-md bg-sidebar-primary text-sidebar-primary-foreground text-sm flex mt-5 pr-3 pl-3 items-center gap-2 h-10 hover:opacity-90"
-            >
-              <Plus className="size-4" />
-              <span>New case</span>
-            </button>
-
-            <div className="mt-6 flex-1 min-h-0 overflow-y-auto">
-              <p className="font-medium uppercase text-sidebar-foreground/50 text-xs tracking-wide mb-2 pr-2 pl-2">
-                Recent chats
-              </p>
-              <div>
-                {recentChatsLoading ? (
-                  Array.from({ length: 4 }).map((_, index) => (
-                    <div
-                      key={index}
-                      className="h-8 rounded-md bg-sidebar-accent/60 animate-pulse mb-1"
-                    />
-                  ))
-                ) : recentChats.length === 0 ? (
-                  <p className="text-sidebar-foreground/50 text-xs pr-2 pl-2 py-1">
-                    No chats yet.
-                  </p>
-                ) : (
-                  recentChats.map((chat) => (
-                    <button
-                      key={chat.chat_id}
-                      onClick={() => void openChat(chat)}
-                      disabled={busy}
-                      title={chat.text}
-                      className={`text-left rounded-md text-sm border-l-2 flex mb-1 pt-2 pr-2 pb-2 pl-2 items-center w-full truncate transition-colors disabled:opacity-60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
-                        chatId === chat.chat_id
-                          ? 'border-l-primary bg-sidebar-accent text-sidebar-foreground'
-                          : 'border-l-sidebar-border text-sidebar-foreground/80'
-                      }`}
-                    >
-                      <span className="truncate">{chat.text}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
+        {/* Desktop sidebar — always visible on large screens */}
+        <aside className="hidden @3xl:flex bg-sidebar border-y-sidebar-border border-r border-r-sidebar-border border-l-sidebar-border w-1/4  max-w-72 pt-5 pr-4 pb-5 pl-4 flex-col shrink-0">
+          {renderSidebar(false)}
         </aside>
+
+        {/* Mobile drawer — overlays the chat */}
+        {sidebarOpen && (
+          <>
+            <button
+              aria-label="Close sidebar"
+              onClick={closeSidebar}
+              className="fixed inset-0 z-30 bg-black/50 @3xl:hidden"
+            />
+            <aside className="fixed inset-y-0 left-0 z-40 w-3/4 bg-sidebar border-y-sidebar-border border-r border-r-sidebar-border border-l-sidebar-border pt-5 pr-4 pb-5 pl-4 flex flex-col @3xl:hidden">
+              {renderSidebar(true)}
+            </aside>
+          </>
+        )}
         <main className="bg-background flex flex-col flex-1 min-w-0 min-h-0">
+          <div className="flex items-center gap-2 px-4 pt-3 @3xl:hidden shrink-0">
+            <button
+              aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+              onClick={() => setSidebarOpen((open) => !open)}
+              className="rounded-md text-muted-foreground hover:text-foreground flex justify-center items-center size-8 hover:bg-accent"
+            >
+              {sidebarOpen ? (
+                <PanelLeftClose className="size-4" />
+              ) : (
+                <Menu className="size-4" />
+              )}
+            </button>
+          </div>
           <div
             className={`pt-5 pr-4 pb-4 pl-4 @3xl:pt-6 @3xl:pr-8 @3xl:pb-6 flex flex-1 justify-center ${chatId ? '' : 'items-center'} min-h-0 w-full overflow-y-auto`}
           >
             {chatId ? (
               /* ---------- Active chat ---------- */
               <div className="flex w-full flex-col gap-3 @3xl:gap-4 px-4 pt-4 pb-4 @md:px-8 @md:pt-6 @md:pb-6 @3xl:px-28 @3xl:pt-14 @3xl:pb-14">
-              
-
                 {chatError && (
                   <p className="text-destructive text-sm border border-destructive/40 bg-destructive/10 rounded-lg px-3 py-2">
                     {chatError}
@@ -441,13 +493,10 @@ export default function CasePilot() {
                             {message.message}
                           </p>
                         )}
-                      
                       </div>
                     </div>
                   )
                 })}
-
-        
 
                 {ended && (
                   <div className="rounded-lg border border-border bg-card px-4 py-3 flex items-center justify-between gap-3">
@@ -582,7 +631,6 @@ export default function CasePilot() {
                       : 'Your conversation will appear here after you select a case'}
                   </p>
                   <div className="flex flex-col items-end gap-1">
-                    
                     <button
                       aria-label="Send"
                       onClick={() => void sendMessage()}
@@ -606,17 +654,26 @@ export default function CasePilot() {
           {/* Mobile bottom tab bar */}
           <nav className="@3xl:hidden bg-card border-x-border border-t border-t-border flex pt-2 pr-4 pb-3 pl-4 justify-around shrink-0 sticky bottom-0 z-10">
             <button
-              onClick={backToCases}
+              onClick={() => {
+                backToCases()
+                closeSidebar()
+              }}
               className="text-xs flex flex-col items-center gap-1"
             >
               <Inbox className="size-5" />
               <span>Cases</span>
             </button>
-            <button className="text-xs flex flex-col items-center gap-1">
+            <button
+              onClick={closeSidebar}
+              className="text-xs flex flex-col items-center gap-1"
+            >
               <Bookmark className="size-5" />
               <span>Saved</span>
             </button>
-            <button className="text-xs flex flex-col items-center gap-1">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="text-xs flex flex-col items-center gap-1"
+            >
               <History className="size-5" />
               <span>Recent</span>
             </button>
