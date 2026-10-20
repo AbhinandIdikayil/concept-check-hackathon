@@ -36,6 +36,7 @@ export interface MessageCreateResponse {
   reply: string
   ended: boolean
   gap_sentence: string | null
+  correct_answer: string | null
   new_case: Case | null
   user_message: Message
   message: Message

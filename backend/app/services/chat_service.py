@@ -30,6 +30,15 @@ FINAL = 1
 PASS_THRESHOLD = 0.6
 POINT_COVERAGE = 0.5
 
+# The closing line of a session. The learner is shown the reference answer
+# either way, so the wording never has to break bad news: a miss is not
+# announced as a failure, it is answered with the answer to compare against.
+_CLOSING_VERDICT = {
+    "passed": "You got it.",
+    "failed": "Not quite this time.",
+}
+_ANSWER_LEAD_IN = "Here's the answer we were looking for:"
+
 _STOPWORDS = frozenset(
     """a about above after again against all also am an and any are as at be because been
     before being below between both but by can cannot could did do does doing down during
@@ -37,7 +46,7 @@ _STOPWORDS = frozenset(
     is it its itself just me more most my no nor not now of off on once only or other our
     out over own same she should so some such than that the their them then there these they
     this those through to too under until up very was we were what when where which while
-    who whom why will with would you your""".split()
+    who whom why will with would you your""".split()  # noqa: SIM905
 )
 
 # The reference answer is written one point per sentence. Clauses joined by a
@@ -131,16 +140,18 @@ def get_case(db: Client, case_id: str) -> dict[str, Any]:
     return row
 
 
-def get_reference_points(db: Client, case_id: str) -> list[str]:
-    """The points to compare an answer against, derived from the reference answer.
+def get_reference_answer(db: Client, case_id: str) -> str:
+    """The reference answer for a case, as stored.
 
-    Derived rather than stored: the answer prose already carries one point per
-    sentence, so there is a single representation to keep up to date.
+    Read in full when the session closes: the learner is shown the answer so
+    they can compare it with what they wrote. The points to grade against are
+    derived from this same text, so there is a single representation to keep
+    up to date.
     """
     row = _single(
         db.table("answers").select("answer").eq("case_id", case_id).limit(1).execute()
     )
-    return derive_points((row or {}).get("answer") or "")
+    return (row or {}).get("answer") or ""
 
 
 def pick_next_case(db: Client, after_case_id: str) -> dict[str, Any]:
@@ -301,11 +312,15 @@ def submit_answer(chat_id: str, user_id: str, message: str) -> MessageCreateResp
        assistant message. No status: nothing has been decided yet.
     2. final answer — the code compares the learner's answers to the case's
        reference points, sets `status` to "passed" or "failed", replies with the
-       verdict and the case to play next, and closes the chat.
+       verdict and the reference answer, and closes the chat.
 
     Grading reads both turns rather than only the last one: the follow-up exists
     to draw out the piece the first answer missed, so judging the follow-up alone
     would fail an answer that is just a fragment of a complete one.
+
+    The reply ends the session. It never carries the next case: that is offered
+    separately, as `new_case`, so a closed transcript is about the case that was
+    played rather than the one to come.
 
     The model never grades, and never decides whether the session ends.
     """
@@ -346,17 +361,24 @@ def submit_answer(chat_id: str, user_id: str, message: str) -> MessageCreateResp
 
         # The chat's own case, so the chat row never contradicts what was graded.
         combined = " ".join([row["message"] for row in previous] + [message])
-        verdict = grade_answer(combined, get_reference_points(db, chat["case_id"]))
+        reference = get_reference_answer(db, chat["case_id"])
+        verdict = grade_answer(combined, derive_points(reference))
 
-        print('verdict',verdict)
+        logger.info("chat %s graded %s", chat_id, verdict)
         db.table("messages").update({"status": verdict}).eq("id", user_row["id"]).execute()
         user_row["status"] = verdict
 
-        # Verdict, a short close, and the next case as an invitation. Which
-        # points were missed is never named: that would give away the answer key.
-        outcome = "Passed." if verdict == "passed" else "Failed."
+        # The verdict, then the answer. The learner is shown the reference
+        # answer either way: it is what they are measured against, and seeing
+        # it is how they learn the shape of a good one. The next case is not
+        # inlined here, it is offered separately once the chat is closed.
         next_case = pick_next_case(db, chat["case_id"])
-        reply = f"{outcome} That's this case finished. Next case: {next_case['text']}"
+        lead_in = _CLOSING_VERDICT[verdict]
+        if reference:
+            reply = f"{lead_in} {_ANSWER_LEAD_IN}\n{reference}"
+        else:
+            # Nothing stored to show: close on the verdict alone.
+            reply = lead_in
         assistant_row = _add_assistant_message(db, chat_id, reply)
         db.table("chats").update({"ended_at": _now()}).eq("id", chat_id).execute()
 
@@ -364,6 +386,7 @@ def submit_answer(chat_id: str, user_id: str, message: str) -> MessageCreateResp
             status=verdict,
             reply=reply,
             ended=True,
+            correct_answer=reference or None,
             new_case=CaseOut.model_validate(next_case),
             user_message=MessageOut.model_validate(user_row),
             message=MessageOut.model_validate(assistant_row),

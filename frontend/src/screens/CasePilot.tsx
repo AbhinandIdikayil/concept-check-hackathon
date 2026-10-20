@@ -7,14 +7,10 @@ import {
   History,
   Inbox,
   Loader2,
-  Mic,
   PanelLeftClose,
-  Paperclip,
   Plus,
   RotateCcw,
   Search,
-  Settings,
-  Sparkles,
 } from 'lucide-react'
 import {
   createChat,
@@ -28,6 +24,9 @@ import type { Case, ChatSummary, Message } from '../api/types'
 import { getUserId, storeUserId } from '../lib/userId'
 import { chatIdFromPath, chatPath, navigate, replace } from '../lib/router'
 
+/** Id prefix for a message shown optimistically, before the API replies. */
+const PENDING_ID_PREFIX = 'pending-'
+
 /**
  * A chat is closed once its latest learner answer was graded: the backend
  * sets `status` ('passed' | 'failed') on that user message when the case
@@ -38,6 +37,21 @@ function isChatClosed(history: Message[]): boolean {
     if (history[i].role === 'user') return history[i].status !== null
   }
   return false
+}
+
+/**
+ * The closing assistant turn carries the reference answer: the lead-in on the
+ * first line, the answer below it. `correct_answer` only travels with the
+ * response of the turn that was just answered, so the stored message is the
+ * fallback when a closed chat is reopened from history.
+ */
+function splitClosingMessage(text: string): { leadIn: string; answer: string } {
+  const newline = text.indexOf('\n')
+  if (newline === -1) return { leadIn: text.trim(), answer: '' }
+  return {
+    leadIn: text.slice(0, newline).trim(),
+    answer: text.slice(newline + 1).trim(),
+  }
 }
 
 /**
@@ -69,13 +83,26 @@ export default function CasePilot() {
   const [messages, setMessages] = useState<Message[]>([])
   const [ended, setEnded] = useState(false)
   const [nextCase, setNextCase] = useState<Case | null>(null)
-  const [gapSentence, setGapSentence] = useState<string | null>(null)
+  const [correctAnswer, setCorrectAnswer] = useState<string | null>(null)
 
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [chatError, setChatError] = useState<string | null>(null)
 
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+
+  /** Grow the composer with the text, up to a cap, then scroll inside it. */
+  const resizeInput = useCallback(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 80), 200)}px`
+  }, [])
+
+  useEffect(() => {
+    resizeInput()
+  }, [draft, resizeInput])
 
   const loadCases = useCallback(async () => {
     setCasesLoading(true)
@@ -124,7 +151,7 @@ export default function CasePilot() {
       setDraft('')
       setEnded(false)
       setNextCase(null)
-      setGapSentence(null)
+      setCorrectAnswer(null)
       setChatTitle(null)
       try {
         const chat = await createChat(target.id, userId)
@@ -153,7 +180,7 @@ export default function CasePilot() {
     setMessages([])
     setEnded(false)
     setNextCase(null)
-    setGapSentence(null)
+    setCorrectAnswer(null)
     setDraft('')
     setChatError(null)
   }, [])
@@ -165,7 +192,7 @@ export default function CasePilot() {
       setDraft('')
       setEnded(false)
       setNextCase(null)
-      setGapSentence(null)
+      setCorrectAnswer(null)
       try {
         const history = await listMessages(id)
         setChatId(id)
@@ -200,16 +227,37 @@ export default function CasePilot() {
     const text = draft
     if (!text.trim()) return
 
+    // Optimistic update: the learner's answer is shown the moment it is
+    // submitted. When the reply lands, this placeholder is swapped for the
+    // server's copy (real id, created_at and grading status).
+    const pendingId = `${PENDING_ID_PREFIX}${Date.now()}`
+    const pendingMessage: Message = {
+      id: pendingId,
+      role: 'user',
+      message: text,
+      status: null,
+      created_at: new Date().toISOString(),
+    }
+
     setBusy(true)
     setChatError(null)
+    setDraft('')
+    setMessages((prev) => [...prev, pendingMessage])
+
     try {
       const result = await createMessage(chatId, userId, text)
-      setMessages((prev) => [...prev, result.user_message, result.message])
-      setGapSentence(result.gap_sentence)
+      setMessages((prev) => [
+        ...prev.filter((message) => message.id !== pendingId),
+        result.user_message,
+        result.message,
+      ])
       setEnded(result.ended)
       setNextCase(result.new_case)
-      setDraft('')
+      setCorrectAnswer(result.correct_answer)
     } catch (error) {
+      // Roll the optimistic message back and let the learner retry it.
+      setMessages((prev) => prev.filter((message) => message.id !== pendingId))
+      setDraft(text)
       setChatError(apiErrorMessage(error, 'Could not send the message.'))
     } finally {
       setBusy(false)
@@ -238,9 +286,6 @@ export default function CasePilot() {
     return () => window.removeEventListener('popstate', syncFromRoute)
   }, [openChatById, resetChat])
 
-  const headerTitle = activeCase
-    ? `Case ${activeCase.id}`
-    : (chatTitle ?? (chatId ? `Chat ${chatId.slice(0, 8)}` : ''))
 
   // The case prompt. The backend usually stores it as the first assistant
   // message, so only show it separately when the transcript doesn't have it.
@@ -288,24 +333,7 @@ export default function CasePilot() {
               <Plus className="size-4" />
               <span>New case</span>
             </button>
-            <div className="mt-6">
-              <p className="font-medium uppercase text-sidebar-foreground/50 text-xs tracking-wide mb-2 pr-2 pl-2">
-                Workspace
-              </p>
-              <div>
-                <button
-                  onClick={backToCases}
-                  className="text-left rounded-md text-sidebar-foreground/80 text-sm flex mb-1 pt-2 pr-2 pb-2 pl-2 items-center gap-3 w-full hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                >
-                  <Inbox className="size-4" />
-                  <span>All cases</span>
-                </button>
-                <button className="text-left rounded-md text-sidebar-foreground/80 text-sm flex pt-2 pr-2 pb-2 pl-2 items-center gap-3 w-full hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">
-                  <Bookmark className="size-4" />
-                  <span>Saved cases</span>
-                </button>
-              </div>
-            </div>
+
             <div className="mt-6 flex-1 min-h-0 overflow-y-auto">
               <p className="font-medium uppercase text-sidebar-foreground/50 text-xs tracking-wide mb-2 pr-2 pl-2">
                 Recent chats
@@ -341,25 +369,6 @@ export default function CasePilot() {
                 )}
               </div>
             </div>
-            <div className="border-x-sidebar-border border-t border-t-sidebar-border border-b-sidebar-border flex mt-4 pt-4 justify-between items-center">
-              <div className="flex items-center gap-3">
-                <div className="font-semibold rounded-full bg-sidebar-primary text-sidebar-primary-foreground text-xs flex justify-center items-center size-8">
-                  AR
-                </div>
-                <div>
-                  <p className="font-medium text-sidebar-foreground text-sm">
-                    Ari Rahman
-                  </p>
-                  <p className="text-sidebar-foreground/55 text-xs">Pro plan</p>
-                </div>
-              </div>
-              <button
-                aria-label="Settings"
-                className="rounded-md text-sidebar-foreground/65 flex justify-center items-center size-8 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              >
-                <Settings className="size-4" />
-              </button>
-            </div>
           </div>
         </aside>
         <main className="bg-background flex flex-col flex-1 min-w-0 min-h-0">
@@ -369,14 +378,7 @@ export default function CasePilot() {
             {chatId ? (
               /* ---------- Active chat ---------- */
               <div className="flex w-full flex-col gap-3 @3xl:gap-4 px-4 pt-4 pb-4 @md:px-8 @md:pt-6 @md:pb-6 @3xl:px-28 @3xl:pt-14 @3xl:pb-14">
-                <div className="flex items-center justify-between gap-3 pb-1">
-                  <span
-                    className="text-muted-foreground text-xs truncate max-w-[60%] text-right"
-                    title={headerTitle}
-                  >
-                    {headerTitle}
-                  </span>
-                </div>
+              
 
                 {chatError && (
                   <p className="text-destructive text-sm border border-destructive/40 bg-destructive/10 rounded-lg px-3 py-2">
@@ -392,43 +394,60 @@ export default function CasePilot() {
                   </div>
                 )}
 
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={
-                      message.role === 'user'
-                        ? 'flex justify-start'
-                        : 'flex justify-end'
-                    }
-                  >
+                {messages.map((message, index) => {
+                  // The last assistant turn of a closed chat is the answer, so
+                  // it gets its own block instead of an ordinary bubble.
+                  const closing =
+                    ended &&
+                    message.role === 'assistant' &&
+                    index === messages.length - 1
+                  const { leadIn, answer } = closing
+                    ? splitClosingMessage(message.message)
+                    : { leadIn: '', answer: '' }
+                  // Shown optimistically while the API is still answering.
+                  const pending = message.id.startsWith(PENDING_ID_PREFIX)
+                  const bubbleClass =
+                    message.role === 'user'
+                      ? 'max-w-[85%] rounded-xl rounded-bl-sm bg-primary/15 border border-primary/30 px-3 py-2 text-md'
+                      : closing
+                        ? 'max-w-[85%] rounded-xl rounded-br-sm bg-accent border border-border px-3 py-2 text-md'
+                        : 'max-w-[85%] rounded-xl rounded-br-sm bg-card border border-border px-3 py-2 text-md'
+
+                  return (
                     <div
+                      key={message.id}
                       className={
                         message.role === 'user'
-                          ? 'max-w-[85%] rounded-xl rounded-bl-sm bg-primary/15 border border-primary/30 px-3 py-2 text-md'
-                          : 'max-w-[85%] rounded-xl rounded-br-sm bg-card border border-border px-3 py-2 text-md'
+                          ? 'flex justify-start'
+                          : 'flex justify-end'
                       }
                     >
-                      <p className="whitespace-pre-wrap">{message.message}</p>
-                      {message.status && (
-                        <span
-                          className={`mt-1 inline-block text-xs font-medium uppercase ${
-                            message.status === 'passed'
-                              ? 'text-chart-2'
-                              : 'text-destructive'
-                          }`}
-                        >
-                          {message.status}
-                        </span>
-                      )}
+                      <div
+                        className={`${bubbleClass} ${pending ? 'opacity-60' : ''}`}
+                      >
+                        {closing ? (
+                          <>
+                            {leadIn && (
+                              <p className="whitespace-pre-wrap">{leadIn}</p>
+                            )}
+                            {(correctAnswer || answer) && (
+                              <p className="mt-2 whitespace-pre-wrap border-t border-border pt-2">
+                                {correctAnswer || answer}
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="whitespace-pre-wrap">
+                            {message.message}
+                          </p>
+                        )}
+                      
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
 
-                {gapSentence && !ended && (
-                  <p className="text-muted-foreground text-xs">
-                    Reasoning stopped at: “{gapSentence}”
-                  </p>
-                )}
+        
 
                 {ended && (
                   <div className="rounded-lg border border-border bg-card px-4 py-3 flex items-center justify-between gap-3">
@@ -525,30 +544,21 @@ export default function CasePilot() {
               </div>
             )}
           </div>
-          <div className="bg-background border-x-border border-t border-t-border pt-3 pr-4 pb-3 pl-4 @3xl:pr-8 @3xl:pl-8 shrink-0 sticky bottom-[3.75rem] @3xl:bottom-0 z-20">
+          <div className="bg-background border-x-border border-t border-t-border pt-3 pr-4 pb-3 pl-4 @3xl:pr-8 @3xl:pl-8 shrink-0 sticky bottom-15 @3xl:bottom-0 z-20">
             <div className="w-full @3xl:max-w-3xl mx-auto">
-              <p className="text-center text-muted-foreground text-xs mb-2 @3xl:mb-3">
-                {chatId
-                  ? ended
-                    ? 'This session is closed. Start the next case to keep going.'
-                    : 'Answer the case in your own words.'
-                  : 'Your conversation will appear here after you select a case'}
-              </p>
               <div
-                className={`rounded-full bg-card border-t border-t-input border-r border-r-input border-b border-b-input border-l border-l-input flex pt-2 pr-2 pb-2 pl-3 @3xl:pr-4 @3xl:pt-3 @3xl:pb-3 items-center gap-2 @3xl:gap-3 ${
+                className={`rounded-2xl bg-card border-t border-t-input border-r border-r-input border-b border-b-input border-l border-l-input flex flex-col justify-between gap-2 min-h-35 p-3 @3xl:p-4 ${
                   chatId && !ended ? '' : 'opacity-60'
                 }`}
               >
-                <button
-                  aria-label="Attach file"
-                  disabled={!chatId || ended}
-                  className="rounded-md text-muted-foreground hover:text-foreground flex justify-center items-center size-8 disabled:opacity-40"
-                >
-                  <Paperclip className="size-4" />
-                </button>
-                <input
+                <textarea
+                  ref={inputRef}
+                  rows={1}
                   value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
+                  onChange={(event) => {
+                    setDraft(event.target.value)
+                    resizeInput()
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && !event.shiftKey) {
                       event.preventDefault()
@@ -561,35 +571,36 @@ export default function CasePilot() {
                       ? 'Answer the case…'
                       : 'Select a case to start answering…'
                   }
-                  className="bg-transparent text-sm outline-none flex-1 min-w-0 placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed cursor-text"
+                  className="bg-transparent text-md outline-none w-full min-w-0 shrink-0 resize-none max-h-50 overflow-y-auto leading-6 placeholder:text-muted-foreground disabled:opacity-50 disabled:cursor-not-allowed cursor-text"
                 />
-                <button
-                  className="rounded-md text-sm flex pt-1 pr-2 pb-1 pl-2 items-center gap-2 disabled:opacity-40"
-                  disabled={!chatId || ended}
-                >
-                  <Sparkles className="size-4" />
-                  Think
-                </button>
-                <button
-                  aria-label="Use microphone"
-                  disabled={!chatId || ended}
-                  className="rounded-md text-muted-foreground hover:text-foreground flex justify-center items-center size-8 disabled:opacity-40"
-                >
-                  <Mic className="size-4" />
-                </button>
-                <button
-                  aria-label="Send"
-                  onClick={() => void sendMessage()}
-                  disabled={!chatId || ended || busy || !draft.trim()}
-                  className="rounded-full bg-primary text-primary-foreground flex justify-center items-center size-8 hover:opacity-90 disabled:opacity-40"
-                >
-                  {busy ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <ArrowUp className="size-4" />
-                  )}
-                </button>
+                <div className="flex items-end justify-between gap-3">
+                  <p className="text-muted-foreground text-md pb-1">
+                    {chatId
+                      ? ended
+                        ? 'This session is closed. Start the next case to keep going.'
+                        : 'Keep it simple. There is no perfect wording.'
+                      : 'Your conversation will appear here after you select a case'}
+                  </p>
+                  <div className="flex flex-col items-end gap-1">
+                    
+                    <button
+                      aria-label="Send"
+                      onClick={() => void sendMessage()}
+                      disabled={!chatId || ended || busy || !draft.trim()}
+                      className="rounded-xl bg-primary text-primary-foreground flex justify-center items-center size-9 @3xl:size-10 hover:opacity-90 disabled:opacity-40"
+                    >
+                      {busy ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <ArrowUp className="size-5" />
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
+              <p className="text-muted-foreground text-xs text-center mt-2">
+                ↵ Enter to send · Shift + Enter for a new line
+              </p>
             </div>
           </div>
           {/* Mobile bottom tab bar */}

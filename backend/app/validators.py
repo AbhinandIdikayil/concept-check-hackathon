@@ -63,6 +63,10 @@ class MessageCreateResponse(BaseModel):
         default=None,
         description="Verbatim sentence from the learner's own answer where reasoning stopped.",
     )
+    correct_answer: str | None = Field(
+        default=None,
+        description="The case's reference answer, shown once the session closes.",
+    )
     new_case: CaseOut | None = Field(
         default=None,
         description="The case offered to play next, once this one is closed.",
