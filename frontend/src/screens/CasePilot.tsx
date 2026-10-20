@@ -395,7 +395,7 @@ export default function CasePilot() {
     <div className="@container bg-background text-foreground w-full h-full">
       <div className="flex w-full h-full overflow-hidden">
         {/* Desktop sidebar — always visible on large screens */}
-        <aside className="hidden @3xl:flex bg-sidebar border-y-sidebar-border border-r border-r-sidebar-border border-l-sidebar-border w-1/4  max-w-72 pt-5 pr-4 pb-5 pl-4 flex-col shrink-0">
+        <aside className="hidden @3xl:flex bg-sidebar border-y-sidebar-border border-r border-r-sidebar-border border-l-sidebar-border w-1/4 pt-5 pr-4 pb-5 pl-4 flex-col shrink-0">
           {renderSidebar(false)}
         </aside>
 
